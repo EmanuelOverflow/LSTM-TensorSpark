@@ -8,6 +8,7 @@ There are provided three different implementations:
 - Standalone;
 - Standalone with speed improvements;
 
+Detailed explanation here: [Distributed implementation of a LSTM on Spark and Tensorflow](http://www.slideshare.net/emanueldinardo/distributed-implementation-of-a-lstm-on-spark-and-tensorflow-69787635)
 
 ### Important
 
