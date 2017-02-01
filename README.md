@@ -1,4 +1,4 @@
-# TensorSpark
+# LSTM-TensorSpark
 
 Implementation of a LSTM with [TensorFlow](https://www.tensorflow.org/) and distributed on [Apache Spark](http://spark.apache.org/) 
 
