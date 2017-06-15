@@ -33,10 +33,12 @@ Standalone models need:
 
 ## Usage
 
-### Example using Spark:
+### Example using Spark: 
+
+From src directory
 
 ```
-pyspark rnn.py -e 10 -hl 5 -i dataset/iris.data -t dataset/config.data -p 5 
+pyspark rnn.py -e 10 -hl 5 -i ../dataset/iris.data -t ../dataset/data.config -p 5 
 ```
 
 * -e: number of epochs;
@@ -48,17 +50,21 @@ pyspark rnn.py -e 10 -hl 5 -i dataset/iris.data -t dataset/config.data -p 5
 
 ### Example without Spark:
 
+From src directory
+
 ```
-python rnn-no-spark.py -e 10 -hl 5 -i dataset/iris.data -t dataset/config.data
+python rnn-no-spark.py -e 10 -hl 5 -i ../dataset/iris.data -t dataset/data.config
 ```
 ```
-python rnn-speed.py -e 10 -hl 5 -i dataset/iris.data -t dataset/config.data
+python rnn-speed.py -e 10 -hl 5 -i ../dataset/iris.data -t dataset/data.config
 ```
 
 ### Using minibatch:
 
+data.config
+
 ```
-python rnn-no-spark.py -e 10 -hl 5 -i dataset/iris.data -t dataset/config.data -mb 10
+python rnn-no-spark.py -e 10 -hl 5 -i ../dataset/iris.data -t ../dataset/data.config -mb 10
 ```
 
 **For full documentation use -h option**
