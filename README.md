@@ -2,7 +2,7 @@
 
 Implementation of a LSTM with [TensorFlow](https://www.tensorflow.org/) and distributed on [Apache Spark](http://spark.apache.org/) 
 
-There are provided three different implementations:
+There are provided two different implementations:
 
 - Distributed on Spark;
 - Standalone;
