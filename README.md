@@ -20,12 +20,14 @@ Distributed model needs:
 - TensorFlow 1.0+
 - Numpy
 - Argparse
+- TQDM
 
 Standalone models need:
 - Python 2.6+
 - TensorFlow 1.0+
 - Numpy
 - Argparse
+- TQDM
 
 
 ## Usage
