@@ -49,8 +49,6 @@ usage: rnn.py [-h] [--master MASTER] [--spark_exec_memory SPARK_EXEC_MEMORY]
               [--mode MODE] [--checkpoint_path CHECKPOINT_PATH]
 ```
 
-RNN-LSTM built on Tensorflow
-
 ```
 optional arguments:
   -h, --help            show this help message and exit
@@ -81,7 +79,7 @@ optional arguments:
   --mode MODE           Execution mode
   --checkpoint_path CHECKPOINT_PATH
                         Directory where to save network model and logs
-
+```
 
 ### Example without Spark:
 
@@ -100,8 +98,6 @@ usage: rnn.py [-h] [--hidden_units HIDDEN_UNITS] [--batch_size BATCH_SIZE]
               [--labels_path LABELS_PATH] [--output_path OUTPUT_PATH]
               [--mode MODE] [--checkpoint_path CHECKPOINT_PATH]
 ```
-
-RNN-LSTM built on Tensorflow
 
 ```
 optional arguments:
