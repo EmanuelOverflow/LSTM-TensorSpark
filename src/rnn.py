@@ -313,15 +313,13 @@ def parse_args(argv):
 
     # Network parameters
     parser.add_argument("--epochs", default=1, type=int, help="Number of epochs")
-    parser.add_argument("--hidden_units", default='128,256', type=str, help="Number of hidden units per layer")
+    parser.add_argument("--hidden_units", default='128,256', type=str, help="List of hidden units per layer")
     parser.add_argument("--batch_size", default=10, type=int, help="Mini batch size")
     parser.add_argument("--num_classes", default=3, type=int, help="Number of classes in dataset")
     parser.add_argument("--in_features", default=4, type=int, help="Number of input features")
+    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Learning rate")
 
     parser.add_argument("--evaluate_every", default=10, type=int, help="Numbers of steps for each evaluation")
-
-    # Hyper-parameters
-    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Learning rate")
 
     # Dataset values
     parser.add_argument("--training_path", default='train', type=str, help="Path to training set")
@@ -412,5 +410,4 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    # tf.app.run()
     main(sys.argv)

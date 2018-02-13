@@ -13,21 +13,18 @@ flags.DEFINE_integer("epochs", 5, "Number of epochs")
 flags.DEFINE_integer("batch_size", 10, "Mini batch size")
 flags.DEFINE_integer("num_classes", 3, "Number of classes")
 flags.DEFINE_integer("in_features", 4, "Number of input features")
-flags.DEFINE_string("hidden_units", '128,256', "Number of hidden units per layer")
+flags.DEFINE_string("hidden_units", '128,256', "List of hidden units per layer")
+flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
 
 flags.DEFINE_integer("evaluate_every", 10, "Numbers of steps for each evaluation")
-
-# Hyper-parameters
-flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
 
 # Dataset values
 flags.DEFINE_string("training_path", 'train', "Path to training set")
 flags.DEFINE_string("labels_path", "train_labels", "Path to training_labels")
 flags.DEFINE_string("output_path", "output_path", "Path for store network state")
 
-# Restore options
+# Other options
 flags.DEFINE_string("mode", 'train', "Execution mode")
-flags.DEFINE_string("load_op", "reduce", "Operation to execute after load")
 
 flags.DEFINE_string("checkpoint_path", "train_dir", "Directory where to save network model and logs")
 
