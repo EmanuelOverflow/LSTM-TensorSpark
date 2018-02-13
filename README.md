@@ -22,7 +22,7 @@ Distributed model needs:
 - Argparse
 - TQDM
 
-Standalone model need:
+Standalone model needs:
 - Python 2.6+
 - TensorFlow 1.0+
 - Numpy
