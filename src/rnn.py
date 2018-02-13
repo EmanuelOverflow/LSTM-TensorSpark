@@ -2,294 +2,111 @@ from pyspark import SparkConf, SparkContext
 from pyspark.rdd import Partitioner
 import tensorflow as tf
 import numpy as np
+from models.recurrent import rnn
 import sys
 import time
-from random import Random
+import os
 import argparse
+# import argparse
 import csv
-import json
-import multiprocessing # works with python 2.6+
-
-NEURON_WEIGHT = 0
-HIDDEN_NEURON = 1
-
-class OutputLayer():
-
-    ACTIVATON_FUNCTIONS = [
-        tf.nn.softmax
-    ]
-
-    SOFTMAX = 0
-
-    def __init__(self, num_hidden, num_class, batch_size, activation = 0):
-        self.weight = tf.Variable(tf.random_normal([num_hidden, num_class]), name="output_layer_weight")
-        self.bias = tf.Variable(tf.ones([batch_size, num_class]), name="output_layer_bias")
-
-        self.activation = self.ACTIVATON_FUNCTIONS[activation]
-
-        self.cross_entropy = None #maybe local
-        self.error = None # maybe local
-
-
-    def predict(self, h_input, s=None):
-        if s:
-            print 'TEST_DATA: ', s.run([h_input, tf.shape(h_input), tf.shape(self.weight)])
-        return self.activation(tf.matmul(h_input, self.weight) + self.bias)
-
-
-    def compute_loss(self, h_input, target, s=None):
-        prediction = self.predict(h_input, s)
-        return -tf.reduce_sum(target * tf.log(prediction)) # could be another function
-
-
-    def evaluate(self, test_state, target, s=None):
-        return self.predict(test_state, s)
-
-
-    def compute_error(self, test_state, target, s=None):
-        prediction = self.predict(test_state, s)
-        incorrects = tf.not_equal(tf.argmax(target, 1), tf.argmax(prediction, 1)) # always 1?
-        return tf.reduce_mean(tf.cast(incorrects, tf.float32)) # what is reduce_mean?
-
-
-class RnnLayer():
-
-    def __init__(self, ltype, num_hidden, dim_size, batch_size=1):
-        self.ltype = ltype
-        self.shape = [num_hidden, dim_size]
-        self.batch_size = batch_size
-
-        self.output_layer = OutputLayer(num_hidden, 3, batch_size)
-
-        self.node_id = Random().getrandbits(64)
-        self.state = [] # Remember all states
-
-        # weight_forget size = num_hidden , dim_size * 2
-        # dim_size * 2 = because it is the horizontal concatenation of two weight matrix Wf=[Wx|Wht]
-        # This size is shared by all weights for the concatenation needed by LSTM
-        self.weight_forget = tf.Variable(tf.random_normal([self.shape[0], self.shape[1] + self.shape[0]]), name="Wf_%d" % self.node_id)
-        self.biases_forget = tf.Variable(tf.ones([self.shape[0], 1]), name="bf_%d" % self.node_id)
-
-        self.weight_input = tf.Variable(tf.random_normal([self.shape[0], self.shape[1] + self.shape[0]]), name="Wi_%d" % self.node_id)
-        self.biases_input = tf.Variable(tf.ones([self.shape[0], 1]), name="bi_%d" % self.node_id)
-
-        self.weight_C = tf.Variable(tf.random_normal([self.shape[0], self.shape[1] + self.shape[0]]), name="WC_%d" % self.node_id)
-        self.biases_C = tf.Variable(tf.ones([self.shape[0], 1]), name="bC_%d" % self.node_id)
-
-        self.weight_output = tf.Variable(tf.random_normal([self.shape[0], self.shape[1] + self.shape[0]]), name="Wo_%d" % self.node_id)
-        self.biases_output = tf.Variable(tf.ones([self.shape[0], 1]), name="bo_%d" % self.node_id)
-
-        self.ht = None
-        self.Ct = None
-    
-
-    def layer_step(self, weight, bias, input_data, activation, name , s=None):
-        data_concat = tf.concat(0, [self.ht, input_data])
-        W = tf.matmul(weight, data_concat, name='%s_W' % name)
-        return activation(W + bias, name='%s_%s' % (name, activation.__name__))
-
-
-    def forget_gate_layer(self, input_data):
-        self.ft.assign(self.layer_step(
-            self.weight_forget, self.biases_forget, input_data, tf.sigmoid,
-            'ft_%d' % self.node_id))
-
-
-    def input_gate_layer(self, input_data):
-        self.it.assign(self.layer_step(
-            self.weight_input, self.biases_input, input_data,
-            tf.sigmoid, 'it_%d' % self.node_id))
-        self.Cta.assign(self.layer_step(
-            self.weight_C, self.biases_C, input_data, tf.tanh,
-            'Cat_%d' % self.node_id))
-
-
-    def update_old_cell_state_layer(self):
-        self.Ct.assign(tf.add(tf.mul(self.ft, self.Ct),
-                          tf.mul(self.it, self.Cta), 'Ct_%d' % self.node_id))
-
-
-    def to_output_layer(self, input_data, s):
-        ot = self.layer_step(self.weight_output,
-                              self.biases_output, input_data, tf.sigmoid, 'Ot_%d' % self.node_id, s)
-        self.ht.assign(tf.mul(ot, tf.tanh(self.Ct), 'ht_%d' % self.node_id))
-
-
-    def train_layer(self, input_data_T, s):
-        # self.ft etc can be local
-        with tf.name_scope('forget_gate_layer'):
-            self.forget_gate_layer(input_data_T)
-        with tf.name_scope('input_gate_layer'):
-            self.input_gate_layer(input_data_T)
-        with tf.name_scope('update_old_cell_state_layer'):
-            self.update_old_cell_state_layer()
-        with tf.name_scope('to_output_layer'):
-            self.to_output_layer(input_data_T, s)
-
-
-    def compute_loss(self, input_data, label):  # set choose loss function
-        return self.output_layer.compute_loss(self.ht, label)
-
-
-    def restore_state(self):
-        self.ht = self.state[-1][0]
-        self.Ct = self.state[-1][1]
-
-
-    def fit_next(self, data, s, last_state=True, train=True):  # set choose optimizer
-        with tf.name_scope('optimizer'):
-            input_data_T = tf.transpose([data], name="input_data_T")
-
-            if not self.ht:
-                # Init h_t
-                self.ht = tf.Variable(tf.random_normal([self.shape[0], 1]), trainable=False, name="ht_%d" % self.node_id)
-                # Init C_t
-                self.Ct = tf.Variable(tf.ones([self.shape[0], 1]), trainable=False, name="Ct_%d" % self.node_id)
-                
-                # Init layers variables
-                self.ft = tf.Variable(tf.ones([self.shape[0], 1]), trainable=False, name="ft_%d" % self.node_id)
-                self.it = tf.Variable(tf.ones([self.shape[0], 1]), trainable=False, name="it_%d" % self.node_id)
-                self.Cta = tf.Variable(tf.ones([self.shape[0], 1]), trainable=False, name="Cta_%d" % self.node_id)
-
-                s.run(tf.initialize_variables([self.ht, self.Ct, self.ft, self.it, self.Cta]))
-
-            with tf.name_scope('train_layer'):
-                self.train_layer(input_data_T, s)
-                if train:
-                    self.state.append((self.ht, self.Ct)) # store the state of each step
-                    ret = self.state[-1] if last_state else self.state
-                else:
-                    ret = (self.ht, self.Ct)
-                    self.restore_state()
-        return ret
-
-
-    def minimize(self, data, t_label, s, optimizer):
-        label = tf.Variable(t_label, name="label", trainable=False, dtype=tf.float32)
-        s.run(tf.initialize_variables([label]))
-        with tf.name_scope('cost_function'):
-            cost = self.output_layer.compute_loss(tf.transpose(self.ht), label)
-        with tf.name_scope('minimization'):
-            #optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.01)
-            return optimizer.minimize(cost, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
-
-
-    def evaluate(self, t_data, t_label, s):
-        state = self.fit_next(t_data, s, train=False)
-        label = tf.Variable(t_label, name="label", trainable=False, dtype=tf.float32)
-        s.run(tf.initialize_variables([label]))
-        with tf.name_scope('evaluate'):
-            return self.output_layer.evaluate(tf.transpose(state[0]), label)
-
-      
-class RNN():
-
-    OPTIMIZERS = [
-        tf.train.AdamOptimizer,
-        tf.train.GradientDescentOptimizer
-    ]
-
-    ADAM_OPTIMIZER = 0
-    GRADIENT_DESCEND_OPTIMIZER = 1
-
-    # FIXME: Put hidden > 1 and epoch > 1 as default in final version
-    def __init__(self, props, target, epoch=100, layers=1, optimizer=0):
-        self.rnn_type = props[0]['layer_type']
-        self.target = target
-        self.epoch = epoch
-
-        self.layer = RnnLayer(self.rnn_type, props[0]['num_hidden'], props[0]['dim_size'])  # * hidden
-
-        self.optimizer = self.OPTIMIZERS[optimizer]()
-
-
-    @property
-    def num_layers(self):
-        return len(self.layers)
-
-
-    def map_data_by_key(self, s):
-        weight_forget = s.run(self.layer.weight_forget)
-        weight_input = s.run(self.layer.weight_input)
-        weight_output = s.run(self.layer.weight_output)
-        weight_C = s.run(self.layer.weight_C)
-        biases_forget = s.run(self.layer.biases_forget)
-        biases_input = s.run(self.layer.biases_input)
-        biases_C = s.run(self.layer.biases_C)
-        biases_output = s.run(self.layer.biases_output)
-        return [
-            ("wf", weight_forget),
-            ("wi", weight_input),
-            ("wo", weight_output),
-            ("wc", weight_C),
-            ("bf", biases_forget),
-            ("bi", biases_input),
-            ("bc", biases_C),
-            ("bo", biases_output),
-        ]
-
-    def fit_layer(self, datas, s, partition=-1, mini_batch=None, normalize=True):
-        data = []
-        labels = []
-        if len(datas) <= 1:
-            return datas
-
-        for d in datas:
-            if len(d) <= 1:
-                continue
-
-            dd, ll = ([float(dt) for dt in d[:-1]], self.target['mapping'][d[-1]])
-            data.append(dd)
-            labels.append(ll)
-
-        if normalize:
-            data = min_max_normalizer(data)
-
-        if not mini_batch:
-            mini_batch = len(data) - 1
-
-        batch_weights = None
-        var_initialized = False
-        for e in xrange(self.epoch):
-            print 'Partition: %d - Epoch: %d' % (partition, (e + 1))
-            print
-
-            for i, (in_data, label) in enumerate(zip(data, labels)):
-                self.layer.fit_next(in_data, s)
-                if i%mini_batch == 0:
-                    minimizer = self.layer.minimize(in_data, label, s, self.optimizer)
-                    if not var_initialized:
-                        tf.initialize_all_variables().run()
-                        var_initialized = True
-                    s.run(minimizer)
-            print
-        batch_weights = self.map_data_by_key(s)
-
-        return batch_weights
-        
-
-    def evaluate(self, data, label, s):
-        print 'EVALUATION: ', s.run(self.layer.evaluate(data, label, s)), label
-
-
-def min_max_normalizer(data, last_str=False):
-    d = np.array(data)
-    mmax = np.amax(d)
-    mmin = np.amin(d)
+# import json
+import multiprocessing  # works with python 2.6+
+from tqdm import trange
+
+# flags = tf.app.flags
+
+# Spark configuration
+# flags.DEFINE_string("master", "local", "Host or master node location (can be node name)")
+# flags.DEFINE_string("spark_exec_memory", '4g', "Spark executor memory")
+# flags.DEFINE_integer("partitions", 4, "Number of distributed partitions")
+#
+# # Network parameters
+# flags.DEFINE_integer("epoch", 5, "Number of epochs")
+# flags.DEFINE_integer("hidden_units", 128, "Number of hidden units")
+# flags.DEFINE_integer("batch_size", 10, "Mini batch size")
+# flags.DEFINE_integer("num_classes", 3, "Number of classes in dataset")
+#
+# flags.DEFINE_integer("evaluate_every", 10, "Numbers of steps for each evaluation")
+#
+# # Hyper-parameters
+# flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
+#
+# # Dataset values
+# flags.DEFINE_string("training_path", 'train', "Path to training set")
+# flags.DEFINE_string("labels_path", "train_labels", "Path to training_labels")
+# flags.DEFINE_string("output_path", "output_path", "Path for store network state")
+#
+# # Restore options
+# flags.DEFINE_boolean("load_pickle", False, "Load weights from a pickle file")
+# flags.DEFINE_string("load_op", "reduce", "Operation to execute after load")
+#
+# flags.DEFINE_string("checkpoint_path", "train_dir", "Directory where to save network model and logs")
+
+# FLAGS = flags.FLAGS
+# FLAGS._parse_flags()
+params_str = ""
+# print("Parameters:")
+# for attr, value in sorted(FLAGS.__flags.items()):
+#     params_str += "{} = {}\n".format(attr.upper(), value)
+#     print("{} = {}".format(attr.upper(), value))
+# print("")
+
+
+def compute_loss(labels, logits, sparse=True):
+    if not sparse:
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+    else:
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+
+    cross_entropy_mean = tf.reduce_mean(
+        cross_entropy
+    )
+
+    tf.summary.scalar(
+        'cross_entropy',
+        cross_entropy_mean
+    )
+
+    weight_decay_loss = tf.get_collection("weight_decay")
+
+    if len(weight_decay_loss) > 0:
+        tf.summary.scalar('weight_decay_loss', tf.reduce_mean(weight_decay_loss))
+
+        # Calculate the total loss for the current tower.
+        total_loss = cross_entropy_mean + weight_decay_loss
+        tf.summary.scalar('total_loss', tf.reduce_mean(total_loss))
+    else:
+        total_loss = cross_entropy_mean
+
+    return total_loss
+
+
+def compute_accuracy(labels, logits, sparse=True):
+    if not sparse:
+        correct_pred = tf.equal(tf.argmax(logits, 1), tf.argmax(labels, 1))
+    else:
+        correct_pred = tf.equal(tf.argmax(logits, 1), labels)
+
+    accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+    tf.summary.scalar("accuracy", accuracy)
+    return accuracy
+
+
+def min_max_normalizer(x):
+    x = np.array(x)
+    mmax = np.amax(x)
+    mmin = np.amin(x)
     rng = mmax - mmin
-    d = 1. - (((1. - 0.) * (mmax - d)) / rng)
+    d = 1. - (((1. - 0.) * (mmax - x)) / rng)
     return d.tolist()
 
-def CSVtoMiniBatchData(line, num_partitions, shuffle=True):
-    '''
-    Enhance me
-    '''
 
+def csv_to_partitions(line, num_partitions, shuffle=True):
     # Spark is unable to create partitions with same size on default
     lines = csv.reader(line)
     # return data if len(data) > 0 else None
     data = []
-    minibatch = []
+    mini_batch = []
 
     for d in lines:
         if len(d) > 0:
@@ -304,24 +121,64 @@ def CSVtoMiniBatchData(line, num_partitions, shuffle=True):
     rdd = []
     key = 0
     for d in data:
-        minibatch.append(d)
-        if len(minibatch) == bs:
-            rdd.append((key, minibatch))
+        mini_batch.append(d)
+        if len(mini_batch) == bs:
+            rdd.append((key, mini_batch))
             key += 1
-            minibatch = []
+            mini_batch = []
     else:
-        if len(minibatch) > 0:
-            rdd.append((key, minibatch))
+        if len(mini_batch) > 0:
+            rdd.append((key, mini_batch))
+
     return rdd
 
 
-def textToRDDCsv(sc, path, num_partitions):
-    # If minPartitions CSVtoMiniBatchData is not necessary
-    return sc.textFile(path, minPartitions=1).mapPartitions(lambda line: CSVtoMiniBatchData(line, num_partitions))
+def text_to_rdd(sc, path, num_partitions):
+    # If minPartitions csv_to_partitions is not necessary
+    return sc.textFile(path, minPartitions=1).mapPartitions(lambda line: csv_to_partitions(line, num_partitions))
 
 
-# , hidden, epoch, batch_size, dim_size=4):
-def train_rnn(partition, multilayer_props, target, epoch=100):
+def process_batch(train_xy, normalize=False):
+    train_x = []
+    train_y = []
+    if len(train_xy) <= 1:
+        return train_xy
+
+    for xy in train_xy:
+        if len(xy) <= 1:
+            continue
+
+        x, y = map(float, xy[:-1]), xy[-1]
+        train_x.append(x)
+        train_y.append(y)
+
+    if normalize:
+        train_x = min_max_normalizer(train_x)
+
+    return np.array(train_x), np.array(train_y)
+
+
+def next_batch(train_x, train_y, batch_size=10, shuffle=True):
+    total_iteration = int(train_x.shape[0] / batch_size)
+
+    while True:
+        if shuffle:
+            p = np.random.permutation(train_x.shape[0])
+            train_x = train_x[p]
+            train_y = train_y[p]
+
+        for i, batch in enumerate(xrange(0, train_x.shape[0], batch_size)):
+
+            if i == total_iteration:
+                continue
+
+            x = train_x[batch:batch + batch_size]
+            y = train_y[batch:batch + batch_size]
+            yield x, y
+
+
+def train_rnn(partition, net_settings, FLAGS, train_optimizer=tf.train.AdamOptimizer):
+    # FLAGS: just to preserve tensorflow notation
 
     partition = list(partition)
 
@@ -329,80 +186,170 @@ def train_rnn(partition, multilayer_props, target, epoch=100):
         print 'RNN-LSTM - ZERO SIZE'
         return partition
 
-    print 'RNN-LSTM - Partition: %s' % partition[0][0]
-    multilayer_props[0]['dim_size'] = len(partition[0][1][0]) - 1
-    rnn = RNN(multilayer_props, epoch=epoch, target=target)
-    start = time.time()
-    with tf.Session() as s:
-        ret = rnn.fit_layer(partition[0][1], s, partition=int(partition[0][0]))
-        # test_data = [5.0,3.3,1.4,0.2]
-        # if multilayer_props[0]['normalize']:
-        #     test_data = min_max_normalizer(test_data)
-        # rnn.evaluate(test_data, [1.0, 0.0, 0.0], s)
-    print 'RNN-LSTM - Partition: %s - Time: %f' % (partition[0][0], time.time() - start)
-    return ret
+    partition_key = partition[0][0]
+
+    print 'LSTM - Partition: {}'.format(partition_key)
+
+    full_batch_size = len(partition[0][1])
+    if not FLAGS.batch_size:
+        batch_size = full_batch_size
+        for i in xrange(net_settings):
+            net_settings[i]['batch_size'] = batch_size
+    else:
+        batch_size = FLAGS.batch_size
+
+    num_hidden_last = net_settings[-1]['num_hidden']
+
+    input_placeholder = tf.placeholder(tf.float32,
+                                       shape=[batch_size, net_settings[0]['dim_size']],
+                                       name="input_placeholder")
+    labels_placeholder = tf.placeholder(tf.int64, shape=[batch_size], name="labels_placeholder")
+    optimizer = train_optimizer(FLAGS.learning_rate)
+
+    rnn_model = rnn.RNN(net_settings)
+
+    with tf.name_scope("LSTM"):
+        net = rnn_model.fit_layers(input_placeholder)
+
+    with tf.variable_scope("Dense1"):
+        dense = tf.reshape(net, [batch_size, -1])
+        weights = tf.get_variable(name="weights", shape=[num_hidden_last, FLAGS.num_classes],
+                                  initializer=tf.truncated_normal_initializer())
+        bias = tf.get_variable(name="bias", shape=[FLAGS.num_classes],
+                               initializer=tf.truncated_normal_initializer())
+
+        logits = tf.matmul(dense, weights) + bias
+
+    loss = compute_loss(logits=logits, labels=labels_placeholder)
+    train_op = optimizer.minimize(loss)
+
+    accuracy = compute_accuracy(logits=logits, labels=labels_placeholder)
+
+    train_vars = rnn_model.map_data_by_key()
+
+    saver = tf.train.Saver(tf.trainable_variables())
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+
+        current_exec = str(time.time())
+        train_dir = FLAGS.checkpoint_path
+        model_save_dir = os.path.join(train_dir, current_exec, str(partition_key))
+
+        if not os.path.exists(model_save_dir):
+            os.makedirs(model_save_dir)
+
+        model_filename = os.path.join(model_save_dir, "spark_lstm.model")
+
+        with open(os.path.join(model_save_dir, "params_settings"), "w+") as f:
+            f.write(params_str)
+
+        if os.path.isfile(model_filename) and FLAGS.use_pretrained_model:
+            saver.restore(sess, model_filename)
+
+        merged = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(os.path.join(model_save_dir, "train"), sess.graph)
+        # test_writer = tf.summary.FileWriter(os.path.join(model_save_dir, "test"), sess.graph)
+
+        train_x, train_y = process_batch(partition[0][1])
+        batches = next_batch(train_x, train_y, batch_size=batch_size)
+
+        max_steps = FLAGS.epochs * batch_size
+        total_steps = trange(max_steps)
+
+        start = time.time()
+        t_acc, v_acc, t_loss, v_loss = 0., 0., 0., 0.
+        for step in total_steps:
+            train_input, train_labels = batches.next()
+
+            _, t_loss = sess.run([train_op, loss], feed_dict={
+                input_placeholder: train_input,
+                labels_placeholder: train_labels
+            })
+
+            t_loss = np.mean(t_loss)
+            total_steps.set_description('Loss: {:.4f}/{:.4f} - t_acc {:.3f} - v_acc {:.3f}'
+                                 .format(t_loss, v_loss, t_acc, v_acc))
+
+            if step % FLAGS.evaluate_every == 0 or (step + 1) == max_steps:
+                saver.save(sess, os.path.join(model_save_dir, 'spark_lstm'), global_step=step)
+
+                summary, t_loss, t_acc = sess.run([merged, loss, accuracy], feed_dict={
+                    input_placeholder: train_input,
+                    labels_placeholder: train_labels
+                })
+                train_writer.add_summary(summary, step)
+                # t_loss = np.mean(t_loss)
+
+                # val_input, val_labels = batches.next()
+                # summary, v_loss, v_acc = sess.run([merged, loss, accuracy], feed_dict={
+                #     input_placeholder: val_input,
+                #     labels_placeholder: val_labels
+                # })
+                # test_writer.add_summary(summary, step)
+                # v_loss = np.mean(v_loss)
+                #
+                total_steps.set_description('Loss: {:.4f} - t_acc {:.3f}'
+                                            .format(t_loss, t_acc))
+
+        trainable_variables = sess.run(train_vars)
+    end_time = time.time() - start
+    print 'RNN-LSTM - Partition: {} - Time: {}s'.format(partition[0][0], end_time)
+    return trainable_variables
 
 
-def map_target(target):
-    target_out = dict(mapping={}, target=[])
-    clazz = 0
-    if type(target) == dict:
-        classes = np.eye(target['num_class'], dtype=np.uint8).tolist()
-        for t in target['classes']:
-            target_out['mapping'][t] = classes[clazz]
-            clazz += 1
-        target_out['target'].extend(classes)
-    return target_out
+def quiet_logs(sc):
+    logger = sc._jvm.org.apache.log4j
+    logger.LogManager.getLogger("org").setLevel(logger.Level.ERROR)
+    logger.LogManager.getLogger("akka").setLevel(logger.Level.ERROR)
 
 
-def quiet_logs( sc ):
-  logger = sc._jvm.org.apache.log4j
-  logger.LogManager.getLogger("org").setLevel( logger.Level.ERROR )
-  logger.LogManager.getLogger("akka").setLevel( logger.Level.ERROR )
-
-
-def main():
-    # Parse arguments
+def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description='Distributed RNN-LSTM built on Spark and Tensorflow')
-    parser.add_argument('-i', '--input', type=str,
-                        required=True, help='Path to dataset')
-    parser.add_argument('-t', '--target', type=str,
-                        required=True, help='Path to target classes')
-    parser.add_argument('-m', '--master', type=str,
-                        help='host of master node', default='local')
-    parser.add_argument('-sem', '--sparkexecmemory', type=str,
-                        help='Spark executor memory', default='4g')
-    parser.add_argument('-p', '--partitions', type=int,
-                        help='Number of minibatch for dataset', default=4)
-    parser.add_argument('-hl', '--numHidden', type=int,
-                        help='Number of hidden layers', default=1)
-    parser.add_argument('-e', '--epoch', type=int,
-                        help='Number of training epoch', default=1)
-    parser.add_argument('-o', '--output', type=str,
-                        help='Output path', default='temp')
-    parser.add_argument('-lp', '--loadPickle', type=bool,
-                        help='Load weights from a pickle file', default=False)
-    parser.add_argument('-lo', '--loadOp', type=str,
-                        help='Operation to execute after load', default='reduce')
-    parser.add_argument('-gp', '--graphPath', type=str,
-                        help='Graph path', default='tmp/graph_default')
+        description='RNN-LSTM built on Tensorflow')
 
-    args = vars(parser.parse_args())
-    input_path = args['input']
-    target_path = args['target']
-    master_host = args['master']
-    sem = args['sparkexecmemory']
-    partitions = args['partitions']
-    hidden = args['numHidden']
-    epoch = args['epoch']
-    output = args['output']
-    load = args['loadPickle']
-    load_op = args['loadOp'].split('|')
-    graphPath = args['graphPath']
+    parser.add_argument("--master", default='local', type=str, help="Host or master node location (can be node name)")
+    parser.add_argument("--spark_exec_memory", default='4g', type=str, help="Spark executor memory")
+    parser.add_argument("--partitions", default=4, type=int, help="Number of distributed partitions")
 
-    global COUNT_RUN
-    COUNT_RUN = 1
+    # Network parameters
+    parser.add_argument("--epochs", default=1, type=int, help="Number of epochs")
+    parser.add_argument("--hidden_units", default='128,256', type=str, help="Number of hidden units per layer")
+    parser.add_argument("--batch_size", default=10, type=int, help="Mini batch size")
+    parser.add_argument("--num_classes", default=3, type=int, help="Number of classes in dataset")
+    parser.add_argument("--in_features", default=4, type=int, help="Number of input features")
+
+    parser.add_argument("--evaluate_every", default=10, type=int, help="Numbers of steps for each evaluation")
+
+    # Hyper-parameters
+    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Learning rate")
+
+    # Dataset values
+    parser.add_argument("--training_path", default='train', type=str, help="Path to training set")
+    parser.add_argument("--labels_path", default='train_labels', type=str, help="Path to training_labels")
+    parser.add_argument("--output_path", default='output_path', type=str, help="Path for store network state")
+
+    # Restore options
+    parser.add_argument("--mode", default="train", help="Execution mode")
+
+    parser.add_argument("--checkpoint_path", default='train_dir', type=str,
+                        help="Directory where to save network model and logs")
+
+    return parser.parse_known_args(argv)
+
+
+def main(argv):
+    FLAGS, _ = parse_args(argv)
+
+    input_path = FLAGS.training_path
+    output = FLAGS.output_path
+
+    master_host = FLAGS.master
+    sem = FLAGS.spark_exec_memory
+    partitions = FLAGS.partitions
+
+    hidden_units = FLAGS.hidden_units.split(',')
+
+    mode = FLAGS.mode
 
     # Initialize spark
     # Substitute 4 with max supported
@@ -417,65 +364,53 @@ def main():
     sc = SparkContext(conf=conf)
     quiet_logs(sc)
 
-    with open(target_path, 'rb') as t_f:
-        target = json.load(t_f)
+    # with open(target_path, 'rb') as t_f:
+    #     target = json.load(t_f)
 
-    target = map_target(target)
+    # target = map_target(target)
 
-    if not load:
+    if mode == 'train':
         # Read dataset into RDD as csv
-        training_rdd = textToRDDCsv(sc, input_path, partitions)
-        minibatch_rdd = training_rdd.partitionBy(partitions + 1)  # FOR NOW OK
-        
-        # It is simple to extend multilayer lstm to support different settings
-        # on multiple layers
-        multilayer_props = [dict(
-            layer_name='1',
-            layer_type='lstm',
-            dim_size=-1,
-            num_hidden=hidden,
-            normalize=True
-        )]
+        training_rdd = text_to_rdd(sc, input_path, partitions)
+        minibatch_rdd = training_rdd.partitionBy(partitions + 1)  # OK FOR NOW
+
+        net_settings = []
+        for i, hidden in enumerate(hidden_units):
+            if i == 0:
+                dim_size = FLAGS.in_features
+            else:
+                dim_size = int(hidden_units[i - 1])
+
+            net_settings.append({
+                'layer_name': "LSTMLayer{}".format(i),
+                'dim_size': dim_size,
+                'num_hidden': int(hidden),
+                'batch_size': FLAGS.batch_size,
+                'normalize': True
+            })
+
         start = time.time()
 
         weights_rdd = minibatch_rdd.mapPartitions(
-            lambda x: train_rnn(x, multilayer_props, epoch=epoch, target=target), True)
+            lambda x: train_rnn(x, net_settings, FLAGS), True)
 
-        # Return weights and average them
+        # Filter out empty partition
         weights_rdd = weights_rdd.filter(lambda x: len(x) == 2)
-        #weights = weights_rdd.saveAsPickleFile(output + '_raw')
-
         out = weights_rdd.filter(lambda x: len(x) == 2)
-        # Mean row by row
-        weights_mean_rdd = out.groupByKey().mapValues(lambda x: sum(
-            x) / float(len(x)))  #
-        if (output == 'temp'):
-            print 'No output directory defined using temp'
-        weights_mean_rdd.collect()
-        print 'RNN-LSTM - Total Processing Time (with weight averaging): %f' % (time.time() - start)
-        print 'RNN-LSTM - Total Processing Time (with repartition) %f' % (time.time() - start)
 
-    else:
-        if 'reduce' in load_op :
-            print 'REDUCING'
-            weights_rdd = sc.pickleFile(input_path + '_raw', partitions)
-            print weights_rdd.collect()
-            out = weights_rdd.filter(lambda x: len(x) == 2)
+        def mean_weights(x):
+            average = []
+            for el in x:
+                average.append(np.mean(el, 0))
+            return average
 
-            # Mean row by row
-            c = out.groupByKey().mapValues(lambda x: sum(
-                x) / float(len(x))).collect() 
-            for i, d in enumerate(c):
-                print i, " - ", d
+        weights_mean_rdd = out.reduceByKey(mean_weights)
+        wm = weights_mean_rdd.collect()
+        # Do something with wm
 
-                print
-                print
-            if 'save' in load_op:
-                if (output == 'temp'):
-                    print 'No output directory defined using temp'
-                weights_mean_rdd.saveAsPickleFile(output + '_mean')
-                print weights_mean_rdd.collect()
-        # SHOULD CONTINUE
-    sys.exit(0)
+        print 'RNN-LSTM - Total Processing Time {}s'.format(time.time() - start)
 
-main()
+
+if __name__ == '__main__':
+    # tf.app.run()
+    main(sys.argv)
