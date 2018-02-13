@@ -13,7 +13,7 @@ flags.DEFINE_integer("epochs", 5, "Number of epochs")
 flags.DEFINE_integer("batch_size", 10, "Mini batch size")
 flags.DEFINE_integer("num_classes", 3, "Number of classes")
 flags.DEFINE_integer("in_features", 4, "Number of input features")
-flags.DEFINE_string("hidden_units", '128,256', "List of hidden units per layer")
+flags.DEFINE_string("hidden_units", '128,256', "List of hidden units per layer (seprated by comma)")
 flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
 
 flags.DEFINE_integer("evaluate_every", 10, "Numbers of steps for each evaluation")

@@ -61,7 +61,7 @@ optional arguments:
                         Number of distributed partitions
   --epochs EPOCHS       Number of epochs
   --hidden_units HIDDEN_UNITS
-                        List of hidden units per layer
+                        List of hidden units per layer (seprated by comma)
   --batch_size BATCH_SIZE
                         Mini batch size
   --num_classes NUM_CLASSES
@@ -88,7 +88,7 @@ optional arguments:
 From src directory
 
 ```
-python python lstm-no-spark.py --training_path ../dataset/iris.data --labels_path ../dataset/labels.data --output_path train_dir_iris
+python lstm-no-spark.py --training_path ../dataset/iris.data --labels_path ../dataset/labels.data --output_path train_dir_iris
 
 ```
 
@@ -105,7 +105,7 @@ usage: rnn.py [-h] [--hidden_units HIDDEN_UNITS] [--batch_size BATCH_SIZE]
 optional arguments:
   --epochs EPOCHS       Number of epochs
   --hidden_units HIDDEN_UNITS
-                        List of hidden units per layer
+                        List of hidden units per layer (seprated by comma)
   --batch_size BATCH_SIZE
                         Mini batch size
   --num_classes NUM_CLASSES
